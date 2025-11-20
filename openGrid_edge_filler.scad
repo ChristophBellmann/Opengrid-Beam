@@ -1,9 +1,10 @@
 /* 
 openGrid Edge Filler Library
-Autor: (du)
+Autor: ChatGPT + Christoph :)
 
 L-förmiger Kantenfüller für openGrid-Tiles (Full, Lite, Heavy).
 
+Geometrie:
 - Schenkel-DICKE = Tile_Thickness / Lite_Tile_Thickness / Heavy_Tile_Thickness
 - Schenkel-LÄNGE = DICKE + ½ Connector-Länge
 - Ein Segment hat Länge = tileSize (Tile_Size)
@@ -13,71 +14,123 @@ L-förmiger Kantenfüller für openGrid-Tiles (Full, Lite, Heavy).
 
 Benötigt:
     include <BOSL2/std.scad>;
-    use <openGrid/openGrid.scad>;
+    include <openGrid/openGrid.scad>;
 */
 
 include <BOSL2/std.scad>;
 include <openGrid/openGrid.scad>;
 
-//Tile_Size = 28;
-//Tile_Thickness = 6.8;
-//Lite_Tile_Thickness = 4.0; //0.1
-// Heavy_Tile_Thickness = 13.8;
+// ======================================================================
+// Hilfsfunktionen / Konstanten
+// ======================================================================
 
-//Tile_Thickness = Lite_Tile_Thickness;
-n  = 1;             // für deinen Test
-
-// ==== Connector-Parameter wie in openGrid (connector_cutout_delete_tool) ====
+// Connector-Parameter wie in openGrid (connector_cutout_delete_tool)
 connector_cutout_radius        = 2.6;
 connector_cutout_dimple_radius = 2.7;
 connector_cutout_separation    = 2.5;
 connector_cutout_height        = 2.4;
-// calc
-connector_full_length = 4 * connector_cutout_radius;
-connector_half_length_default = connector_full_length / 2;
-// Ergebnis: 5.2 mm
 
-// ==== Hilfsfunktionen =======================================================
+// daraus abgeleitete „Länge“ des Schnapp-Features
+connector_full_length         = 4 * connector_cutout_radius;
+connector_half_length_default = connector_full_length / 2;    // ≈ 5.2mm
 
+// Kacheldicke abhängig vom Typ
 function og_edge_tile_thickness(boardType) =
     boardType == "Lite"  ? Lite_Tile_Thickness :
     boardType == "Heavy" ? Heavy_Tile_Thickness :
                            Tile_Thickness;
 
+// halbe Connector-Länge (aktuell überall gleich, aber gekapselt)
 function og_edge_connector_half_len(boardType) =
     connector_half_length_default;
 
 
-// ==== 2D-L-Profil (Querschnitt) mit 2 Dreiecken =========================
+// ======================================================================
+// 2D-L-Profil (Querschnitt) mit Chamfer und gefülltem Dreieck
+// ----------------------------------------------------------------------
+// Lokale 2D-Koordinaten: (x,y)  – wir interpretieren sie später als
+// (Y,Z) des 3D-Objekts.
 //
-// Lokale Y/Z-Koordinaten:
-//   innere Ecke an den Tiles: (0,0)
-//   Boden-Schenkel : 0 <= Y <= leg_len, 0 <= Z <= th
-//   Wand-Schenkel  : 0 <= Y <= th,      0 <= Z <= leg_len
+// innere Ecke an den Tiles: (0,0)
+// Boden-Schenkel : 0 <= x <= leg_len, 0 <= y <= th
+// Wand-Schenkel  : 0 <= x <= th,      0 <= y <= leg_len
+//
+// Chamfer:
+//  - innen: Dreieck [th,th]–[leg_len,th]–[th,leg_len]
+//  - außen: Dreieck [0,0]–[th,0]–[0,th] wird weggeschnitten.
+// ======================================================================
 module og_edge_L_profile(th, conn_half) {
     leg_len = th + conn_half;
+
     difference() {
         union() { 
-            square([leg_len, th], center=false); // L-Profil Boden-Schenkel
-            square([th, leg_len], center=false); // L-Profil Wand-Schenkel
-            polygon([             // Dreieck-Füllung Mitte (Chamfer)
-                [th, th],
-                [leg_len, th],
-                [th, leg_len]
+            // Boden-Schenkel
+            square([leg_len, th], center=false);
+            // Wand-Schenkel
+            square([th, leg_len], center=false);
+            // Dreieck-Füllung innen (V-förmige „Brücke“)
+            polygon([
+                [th,      th     ],
+                [leg_len, th     ],
+                [th,      leg_len]
             ]);
         }
+
+        // äußere 90°-Ecke abflachen (Chamfer außen)
         polygon([
-            [0, 0],   // 90-Grad-Ecke Aussen (Chamfer)
+            [0, 0],   // 90°-Ecke
             [th, 0],  // Punkt auf x-Achse
             [0, th]   // Punkt auf y-Achse
         ]);
     }
 }
 
+
+// ======================================================================
+// EIN SEGMENT (eine Tile-Kante)
+// ======================================================================
+//
+// Ziel: ein V-förmig druckbares „L“, das man in die Ecke zwischen
+// Boden-Tile und Wand-Tile schieben kann.
+//
+// Globale Orientierung nach allen Transformationen:
+//
+//   - Lange Richtung des Segments: ungefähr Welt-X
+//   - Das V (Chamfer) liegt außen, so dass das Teil „auf dem Rücken“ liegt
+//     und im 45°-Winkel druckbar ist.
+//
+// Transformations-Pipeline (von innen nach außen):
+//
+//   1) og_edge_L_profile(th,conn_half)   → 2D in (x,y)
+//
+//   2) linear_extrude(height = len_total)
+//         → 3D-Block; Extrusion entlang lokaler +Z
+//           Profil liegt weiterhin in (x,y), Länge in Z.
+//
+//   3) rotate([90,-45,0])
+//        - Erst 90° um X: Z → Y, Y → -Z
+//        - Dann -45° um Y: kippt das L in ein „V“.
+//
+//   4) translate([0, tileSize/2, -back_offset])
+//        - schiebt das V so, dass die innere Ecke auf der „Kontaktkante“ liegt
+//
+//   5) zrot(90)
+//        - dreht alles, damit die lange Achse ungefähr entlang Welt-X liegt.
+//
+//   6) attachable(... size=[len_total,leg_len,leg_len])
+//        - sorgt dafür, dass das ganze Segment nach außen hin sauber
+//          zentriert ist und wie ein BOSL-„Baustein“ benutzt werden kann.
 // ==== einzelnes Segment (eine Tile-Kante) ===================================
 //
 // L-Profil mit Chamfer, „auf dem Rücken“ liegend (45°-Fase außen),
 // extrudiert über tileSize. Segment wird zentriert via BOSL2 attachable().
+// Rechts und links einfache rechteckige End-Aussparungen.
+//
+// ==== einzelnes Segment (eine Tile-Kante) ===================================
+//
+// L-Profil mit Chamfer, „auf dem Rücken“ liegend (45°-Fase außen),
+// extrudiert über tileSize. Segment wird zentriert via BOSL2 attachable().
+// Hier: einfache rechteckige End-Cutouts (Filler-zu-Filler-Verbindung).
 //
 module openGrid_edge_filler_segment(
     tileSize  = Tile_Size,
@@ -90,10 +143,10 @@ module openGrid_edge_filler_segment(
     conn_half  = og_edge_connector_half_len(boardType);
     leg_len    = th + conn_half;
     len_total  = tileSize;
-    back_offset = th / sqrt(2);   // Abstand des Chamfers von der ursprünglichen Ecke
+    back_offset = th / sqrt(2);   // Abstand der Chamfer-Ecke
 
     // Boundingbox des fertigen Fillers:
-    // X ≈ tileSize (Extrusionsrichtung)
+    // X ≈ len_total (Segmentlänge)
     // Y/Z ≈ leg_len (Schenkellängen + Chamfer)
     attachable(
         anchor = anchor,
@@ -102,37 +155,71 @@ module openGrid_edge_filler_segment(
         size   = [len_total, leg_len, leg_len]
     ) {
 
-        // Hier könnte man später mit `difference()` arbeiten, um
-        // Connector-Aussparungen hineinzuschneiden.
+        // *** WICHTIG: ab hier arbeiten wir in einem lokalen Segmentraum ***
+        //
+        // 1. L-Profil entsteht in XY und wird entlang +Z extrudiert (0..len_total).
+        // 2. Dann wird der ganze Block gedreht/verschoben, aber die Cutouts
+        //    bekommen GENAU DIESELBE Transformationskette, daher passt alles.
 
-        // 1. um Z drehen (90°), damit Segment in gewünschter Orientierung liegt
         zrot(90)
-            // 2. aus der Mitte nach außen schieben:
-            //    - in +Y, damit die „innere“ Ecke an der Tile-Kante liegt
-            //    - in -Z um back_offset, damit der Chamfer auf Z=0 liegt
-            translate([0, tileSize/2, -back_offset])
-                // 3. Profil drehen:
-                //    - 90° um X: Profil in XZ-Ebene
-                //    - -45° um Y (oder X, wie du es gewählt hast), damit es auf dem Chamfer „liegt“
-                rotate([90, -45, 0])
-                    // 4. L-Profil extrudieren
-                    linear_extrude(height = len_total)
-                        og_edge_L_profile(th = th, conn_half = conn_half);
+        translate([0, tileSize/2, -back_offset])
+        rotate([90, -45, 0])
+        difference() {
+
+            // ---------- 1) Volumen des L-Fillers ----------
+            linear_extrude(height = len_total)
+                og_edge_L_profile(th = th, conn_half = conn_half);
+
+            // ---------- 2) End-Cutouts im *extrude-Raum* ----------
+            //
+            // In diesem Raum gilt:
+            //   - Z = Segmentlänge (0 .. len_total)
+            //   - X/Y = L-Querschnitt (0 .. leg_len)
+            //
+            // Wir schneiden von beiden Enden etwas weg, lassen aber
+            // den Block insgesamt auf Länge len_total.
+
+            cut_len   = connector_full_length;   // wie lang der Slot ins Teil geht
+            cut_w     = th;                      // Breite in X
+            cut_h     = th;                      // Höhe in Y
+
+            // linker End-Slot (Start bei z = 0 → etwas in das Teil hinein)
+            translate([0, 0, 0])
+                cube([cut_w, cut_h, cut_len], center=false);
+
+            // rechter End-Slot (Ende bei z = len_total)
+            translate([0, 0, len_total - cut_len])
+                cube([cut_w, cut_h, cut_len], center=false);
+        }
 
         children();
     }
 }
 
 
-// ==== Reihe von Segmenten entlang X oder Y ==================================
+
+
+// ======================================================================
+// REIHE VON SEGMENTEN (entlang einer Board-Kante)
+// ======================================================================
+//
+// entlang="X":
+//   - gesamte Reihe läuft entlang Welt-X
+//   - n Segmente werden nebeneinander gesetzt
+//
+// entlang="Y":
+//   - ganze Reihe wird um 90° gedreht (zrot(90)), so dass
+//     die Segmente insgesamt entlang Y laufen.
+// ======================================================================
+// ==== Reihe von Segmenten entlang X oder Y =============================
 //
 // entlang="X" → Reihe entlang X (eine Segmentlänge = tileSize)
-// entlang="Y" → gleiche Geometrie, um 90° gedreht, entlang Y
+// entlang="Y" → gleiche Geometrie, aber Segmente werden entlang Y gesetzt
 //
 module openGrid_edge_filler_row(
     Board_Length_Tiles,            // Anzahl Tiles entlang dieser Kante
     tileSize   = Tile_Size,
-    boardType  = Full_or_Lite,
+    boardType  = "Lite",
     entlang    = "X",              // "X" oder "Y"
     anchor     = CENTER,
     spin       = 0,
@@ -151,24 +238,24 @@ module openGrid_edge_filler_row(
                ]) {
 
         for (i = [0:Board_Length_Tiles-1]) {
-            offset = (i + 0.5) * tileSize - total_len/2  - tileSize/2;
+            offset = (i + 0.5) * tileSize - total_len/2;
 
             if (entlang == "X") {
+                // Reihe entlang X
                 translate([offset, 0, 0])
-                    yrot(90)
                     openGrid_edge_filler_segment(
                         tileSize  = tileSize,
                         boardType = boardType,
                         anchor    = CENTER
                     );
-            } else { // entlang Y
+            } else {
+                // Reihe entlang Y
                 translate([0, offset, 0])
-                    yrot(90)
-                        openGrid_edge_filler_segment(
-                            tileSize  = tileSize,
-                            boardType = boardType,
-                            anchor    = CENTER
-                        );
+                    openGrid_edge_filler_segment(
+                        tileSize  = tileSize,
+                        boardType = boardType,
+                        anchor    = CENTER
+                    );
             }
         }
 
@@ -177,20 +264,27 @@ module openGrid_edge_filler_row(
 }
 
 
-// ==== Board-bezogene Filler, gesteuert durch Connector_Holes_* ==============
+
+// ======================================================================
+// Filler für ein komplettes Board – orientiert wie openGrid/openGridLite
+// ======================================================================
 //
-// Das Board wird wie openGrid/openGridLite mit anchor=CENTER angenommen.
-// Die Filler sitzen direkt an den Kanten (X/Y), innere Ecke auf der
-// Board-Kante. Orientierung des L zeigt nach außen.
+// Das Board wird wie in openGrid mit anchor=CENTER angenommen.
 //
-// Du kannst dieses Modul für ein Board separat rendern (oder nur
-// die Seiten verwenden, die dich interessieren).
+// Die Filler sitzen direkt an den Kanten eines Boards:
+//   - rechte Kante (+X)
+//   - linke  Kante (-X)
+//   - obere  Kante (+Y)
+//   - untere Kante (-Y)
 //
+// Sie werden mit den gleichen Flags wie die Connector-Holes gesteuert:
+//   Connector_Holes_*, Connector_Holes.
+// ======================================================================
 module openGrid_edge_fillers_for_board(
     Board_Width,
     Board_Height,
     tileSize  = Tile_Size,
-    boardType = Full_or_Lite,
+    boardType = "Lite",
     anchor    = CENTER,
     spin      = 0,
     orient    = UP
@@ -206,24 +300,22 @@ module openGrid_edge_fillers_for_board(
 
         if (Connector_Holes) {
 
-            // --- rechte Kante (+X), Reihe entlang Y ---
+            // rechte Kante (+X), Reihe entlang Y
             if (Connector_Holes_Right && Board_Height > 0) {
                 translate([ board_w/2, 0, 0 ])
-                    xrot(90)    // L vor die Kante kippen
-                        openGrid_edge_filler_row(
-                            Board_Length_Tiles = Board_Height,
-                            tileSize   = tileSize,
-                            boardType  = boardType,
-                            entlang    = "Y",
-                            anchor     = CENTER
-                        );
+                    openGrid_edge_filler_row(
+                        Board_Length_Tiles = Board_Height,
+                        tileSize   = tileSize,
+                        boardType  = boardType,
+                        entlang    = "Y",
+                        anchor     = CENTER
+                    );
             }
 
-            // --- linke Kante (-X), Reihe entlang Y ---
+            // linke Kante (-X), Reihe entlang Y (gespiegelt)
             if (Connector_Holes_Left && Board_Height > 0) {
                 translate([-board_w/2, 0, 0 ])
-                    xrot(90)
-                    yrot(180) // L nach außen spiegeln
+                    yrot(180)
                         openGrid_edge_filler_row(
                             Board_Length_Tiles = Board_Height,
                             tileSize   = tileSize,
@@ -233,25 +325,22 @@ module openGrid_edge_fillers_for_board(
                         );
             }
 
-            // --- obere Kante (+Y), Reihe entlang X ---
+            // obere Kante (+Y), Reihe entlang X
             if (Connector_Holes_Top && Board_Width > 0) {
                 translate([0, board_h/2, 0])
-                    xrot(90)
-                    zrot(90)
-                        openGrid_edge_filler_row(
-                            Board_Length_Tiles = Board_Width,
-                            tileSize   = tileSize,
-                            boardType  = boardType,
-                            entlang    = "X",
-                            anchor     = CENTER
-                        );
+                    openGrid_edge_filler_row(
+                        Board_Length_Tiles = Board_Width,
+                        tileSize   = tileSize,
+                        boardType  = boardType,
+                        entlang    = "X",
+                        anchor     = CENTER
+                    );
             }
 
-            // --- untere Kante (-Y), Reihe entlang X ---
+            // untere Kante (-Y), Reihe entlang X (gespiegelt)
             if (Connector_Holes_Bottom && Board_Width > 0) {
                 translate([0, -board_h/2, 0])
-                    xrot(90)
-                    zrot(-90)
+                    yrot(180)
                         openGrid_edge_filler_row(
                             Board_Length_Tiles = Board_Width,
                             tileSize   = tileSize,
@@ -267,77 +356,14 @@ module openGrid_edge_fillers_for_board(
 }
 
 
-// Filler für eine Board-Kante anhand der Seite platzieren.
-// side: "right", "left", "bottom", "top"
-// n_tiles: Anzahl Tiles entlang dieser Kante
-
-module openGrid_edge_filler_side(
-    side,
-    n_tiles,
-    tileSize  = Tile_Size,
-    boardType = Full_or_Lite,
-    anchor    = CENTER,
-    spin      = 0,
-    orient    = UP
-) {
-    half_span = n_tiles * tileSize / 2;
-
-    attachable(anchor, spin, orient,
-               size=[n_tiles*tileSize, n_tiles*tileSize,
-                     og_edge_tile_thickness(boardType)
-                     + og_edge_connector_half_len(boardType)]) {
-
-        if (side == "right") {
-            // 90° zur X-Achse, parallel zur Y-Achse,
-            // um n*(1/2*Tile_Size) nach -X verschoben
-            translate([-half_span, 0, 0])
-                zrot(90)  // Reihe (X) → parallel Y
-                    openGrid_edge_filler_row(
-                        Board_Length_Tiles = n_tiles,
-                        tileSize   = tileSize,
-                        boardType  = boardType,
-                        entlang    = "X",
-                        anchor     = CENTER
-                    );
-
-        } else if (side == "left") {
-            // 90° zur X-Achse, parallel Y,
-            // um n*(1/2*Tile_Size) nach +X verschoben
-            translate([ half_span, 0, og_edge_tile_thickness(boardType)])
-                rotate([-90, 0, 90])
-                    openGrid_edge_filler_row(
-                        Board_Length_Tiles = n_tiles,
-                        tileSize   = tileSize,
-                        boardType  = boardType,
-                        entlang    = "X",
-                        anchor     = CENTER
-                    );
-
-        } else if (side == "bottom") {
-            // 90° zur Y-Achse, parallel X,
-            // um n*(1/2*Tile_Size) nach -Y verschoben
-            translate([0, -half_span, 0])
-                openGrid_edge_filler_row(
-                    Board_Length_Tiles = n_tiles,
-                    tileSize   = tileSize,
-                    boardType  = boardType,
-                    entlang    = "X",   // Reihe liegt schon entlang X
-                    anchor     = CENTER
-                );
-
-        } else if (side == "top") {
-            // 90° zur Y-Achse, parallel X,
-            // um n*(1/2*Tile_Size) nach +Y verschoben
-            translate([0,  half_span, 0])
-                openGrid_edge_filler_row(
-                    Board_Length_Tiles = n_tiles,
-                    tileSize   = tileSize,
-                    boardType  = boardType,
-                    entlang    = "X",
-                    anchor     = CENTER
-                );
-        }
-
-        children();
-    }
-}
+// ======================================================================
+// MINI-TEST (kannst du in deiner corner-demo.scad einkommentieren)
+//
+//   include <openGrid/openGrid_edge_filler.scad>;
+//
+//   Full_or_Lite = "Lite";
+//
+//   color("orange")
+//       openGrid_edge_filler_segment(tileSize=Tile_Size, boardType="Lite");
+//
+// ======================================================================
