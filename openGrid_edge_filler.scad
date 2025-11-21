@@ -1,5 +1,5 @@
 /* 
-openGrid Edge Filler Library
+openGrid Edge Beam Library
 Autor: ChatGPT + Christoph :)
 
 L-förmiger Kantenfüller für openGrid-Tiles (Full, Lite, Heavy).
@@ -11,21 +11,21 @@ Geometrie:
 - Für Board_Width/Board_Height werden entsprechend viele Segmente generiert.
 - Die Filler werden per Connector_Holes_* ein/ausgeschaltet, analog zu
   den Connector-Ausnehmungen in openGrid.scad.
-
-Benötigt:
-    include <BOSL2/std.scad>;
-    include <openGrid/openGrid.scad>;
 */
 
 include <BOSL2/std.scad>;
 include <openGrid/openGrid.scad>;
 
 Full_or_Lite = "Full";
-Board_Length_Tiles = 1;
+Board_Length_Tiles = 2;
+
+/*[Advanced Parameters]*/
+Connector_Tolerance = 0.1;
+Connector_Protrusion = 2.0;
+Tile_Size = 28;
 
 color("orange")
     openGrid_edge_filler_segment(
-        tileSize  = Tile_Size,
         boardType = Full_or_Lite,
         anchor    = CENTER
     );
@@ -54,18 +54,7 @@ function og_edge_tile_thickness(boardType) =
 
 
 // ======================================================================
-// 2D-L-Profil (Querschnitt) mit Chamfer und gefülltem Dreieck
-// ----------------------------------------------------------------------
-// Lokale 2D-Koordinaten: (x,y)  – wir interpretieren sie später als
-// (Y,Z) des 3D-Objekts.
-//
-// innere Ecke an den Tiles: (0,0)
-// Boden-Schenkel : 0 <= x <= leg_len, 0 <= y <= th
-// Wand-Schenkel  : 0 <= x <= th,      0 <= y <= leg_len
-//
-// Chamfer:
-//  - innen: Dreieck [th,th]–[leg_len,th]–[th,leg_len]
-//  - außen: Dreieck [0,0]–[th,0]–[0,th] wird weggeschnitten.
+// 2D-L-Profil (Querschnitt) mit Chamfer und gefülltem Dreieck und äusserer Fase
 // ======================================================================
 module og_edge_L_profile(th) {
     leg_len = th + connector_length_half;
@@ -93,80 +82,26 @@ module og_edge_L_profile(th) {
     }
 }
 
-
 // ======================================================================
 // EIN SEGMENT (eine Tile-Kante)
 // ======================================================================
-//
-// Ziel: ein V-förmig druckbares „L“, das man in die Ecke zwischen
-// Boden-Tile und Wand-Tile schieben kann.
-//
-// Globale Orientierung nach allen Transformationen:
-//
-//   - Lange Richtung des Segments: ungefähr Welt-X
-//   - Das V (Chamfer) liegt außen, so dass das Teil „auf dem Rücken“ liegt
-//     und im 45°-Winkel druckbar ist.
-//
-// Transformations-Pipeline (von innen nach außen):
-//
-//   1) og_edge_L_profile(th)   → 2D in (x,y),
-//   connector_length_half und dicke zusammen ist min. platz für conn. in 45° Winkel 
-//
-//   2) linear_extrude(height = len_total)
-//         → 3D-Block; Extrusion entlang lokaler +Z
-//           Profil liegt weiterhin in (x,y), Länge in Z.
-//
-//   3) rotate([90,-45,0])
-//        - Erst 90° um X: Z → Y, Y → -Z
-//        - Dann -45° um Y: kippt das L in ein „V“.
-//
-//   4) translate([0, tileSize/2, -back_offset])
-//        - schiebt das V so, dass die innere Ecke auf der „Kontaktkante“ liegt
-//
-//   5) zrot(90)
-//        - dreht alles, damit die lange Achse ungefähr entlang Welt-X liegt.
-//
-//   6) attachable(... size=[len_total,leg_len,leg_len])
-//        - sorgt dafür, dass das ganze Segment nach außen hin sauber
-//          zentriert ist und wie ein BOSL-„Baustein“ benutzt werden kann.
-// ==== einzelnes Segment (eine Tile-Kante) ===================================
-//
-// L-Profil mit Chamfer, „auf dem Rücken“ liegend (45°-Fase außen),
-// extrudiert über tileSize. Segment wird zentriert via BOSL2 attachable().
-// Rechts und links einfache rechteckige End-Aussparungen.
-//
-// ==== einzelnes Segment (eine Tile-Kante) ===================================
-//
-// L-Profil mit Chamfer, „auf dem Rücken“ liegend (45°-Fase außen),
-// extrudiert über tileSize. Segment wird zentriert via BOSL2 attachable().
-// Hier: einfache rechteckige End-Cutouts (Filler-zu-Filler-Verbindung).
-//
+
 module openGrid_edge_filler_segment(
-    tileSize  = Tile_Size,
     boardType = Full_or_Lite,
     anchor    = CENTER,
     spin      = 0,
     orient    = UP
 ) {
     th         = og_edge_tile_thickness(boardType);
-    echo("dasisttileheight");
-    echo(th);
     leg_len    = th + connector_length_half;
-    len_total  = tileSize;
     back_offset = th / sqrt(2);   // Abstand der Chamfer-Ecke
-
-    // Boundingbox des fertigen Fillers:
-    // X ≈ len_total (Segmentlänge)
-    
-    // nicht    Board_Length_Tiles,            // Anzahl Tiles, damit bei einer reihe nicht connectors innerhalb des fillers sind. connectors nur am Anfang und am Ende einer Reihe.
-        
         
     // Y/Z ≈ leg_len (Schenkellängen + Chamfer)
     attachable(
         anchor = anchor,
         spin   = spin,
         orient = orient,
-        size   = [len_total, leg_len, leg_len]
+        size   = [Tile_Size, leg_len, leg_len]
     ) {
 
         // *** WICHTIG: ab hier arbeiten wir in einem lokalen Segmentraum ***
@@ -176,13 +111,13 @@ module openGrid_edge_filler_segment(
         //    bekommen GENAU DIESELBE Transformationskette, daher passt alles.
 
         zrot(90)
-        translate([0, tileSize/2, -back_offset])
+        translate([0, Tile_Size/2, -back_offset])
         rotate([90, -45, 0])
         
         difference() {
 
             // ---------- 1) Volumen des L-Fillers ----------
-            linear_extrude(height = len_total)
+            linear_extrude(height = Tile_Size)
                 og_edge_L_profile(th = th);
 
             // ---------- 2) End-Cutouts mit Library-Cutout ----------
@@ -200,18 +135,13 @@ module openGrid_edge_filler_segment(
 
             // rechter End-Cutout (Segmentende, z = len_total)
             tag("remove")
-                translate([cut_xy, cut_xy, len_total - connector_cutout_offset])
+                translate([cut_xy, cut_xy, Tile_Size - connector_cutout_offset])
                     rotate([0, 90, 45])
                         connector_cutout_delete_tool(anchor=CENTER);
         }
-
-
         children();
     }
 }
-
-
-
 
 // ======================================================================
 // REIHE VON SEGMENTEN (entlang einer Board-Kante)
