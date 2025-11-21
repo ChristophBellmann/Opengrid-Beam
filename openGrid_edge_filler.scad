@@ -20,6 +20,16 @@ Benötigt:
 include <BOSL2/std.scad>;
 include <openGrid/openGrid.scad>;
 
+Full_or_Lite = "Full";
+Board_Length_Tiles = 1;
+
+color("orange")
+    openGrid_edge_filler_segment(
+        tileSize  = Tile_Size,
+        boardType = Full_or_Lite,
+        anchor    = CENTER
+    );
+    
 // ======================================================================
 // Hilfsfunktionen / Konstanten
 // ======================================================================
@@ -31,8 +41,9 @@ connector_cutout_separation    = 2.5;
 connector_cutout_height        = 2.4;
 
 // daraus abgeleitete „Länge“ des Schnapp-Features
-connector_full_length         = 4 * connector_cutout_radius;
-connector_half_length_default = connector_full_length / 2;    // ≈ 5.2mm
+connector_length_nominal = 2 * (connector_cutout_radius + connector_cutout_separation); // ≈ 10.2 mm
+
+connector_length_half = connector_length_nominal /2;
 
 // Kacheldicke abhängig vom Typ
 function og_edge_tile_thickness(boardType) =
@@ -40,9 +51,6 @@ function og_edge_tile_thickness(boardType) =
     boardType == "Heavy" ? Heavy_Tile_Thickness :
                            Tile_Thickness;
 
-// halbe Connector-Länge (aktuell überall gleich, aber gekapselt)
-function og_edge_connector_half_len(boardType) =
-    connector_half_length_default;
 
 
 // ======================================================================
@@ -59,8 +67,8 @@ function og_edge_connector_half_len(boardType) =
 //  - innen: Dreieck [th,th]–[leg_len,th]–[th,leg_len]
 //  - außen: Dreieck [0,0]–[th,0]–[0,th] wird weggeschnitten.
 // ======================================================================
-module og_edge_L_profile(th, conn_half) {
-    leg_len = th + conn_half;
+module og_edge_L_profile(th) {
+    leg_len = th + connector_length_half;
 
     difference() {
         union() { 
@@ -101,7 +109,8 @@ module og_edge_L_profile(th, conn_half) {
 //
 // Transformations-Pipeline (von innen nach außen):
 //
-//   1) og_edge_L_profile(th,conn_half)   → 2D in (x,y)
+//   1) og_edge_L_profile(th)   → 2D in (x,y),
+//   connector_length_half und dicke zusammen ist min. platz für conn. in 45° Winkel 
 //
 //   2) linear_extrude(height = len_total)
 //         → 3D-Block; Extrusion entlang lokaler +Z
@@ -140,13 +149,18 @@ module openGrid_edge_filler_segment(
     orient    = UP
 ) {
     th         = og_edge_tile_thickness(boardType);
-    conn_half  = og_edge_connector_half_len(boardType);
-    leg_len    = th + conn_half;
+    echo("dasisttileheight");
+    echo(th);
+    leg_len    = th + connector_length_half;
     len_total  = tileSize;
     back_offset = th / sqrt(2);   // Abstand der Chamfer-Ecke
 
     // Boundingbox des fertigen Fillers:
     // X ≈ len_total (Segmentlänge)
+    
+    // nicht    Board_Length_Tiles,            // Anzahl Tiles, damit bei einer reihe nicht connectors innerhalb des fillers sind. connectors nur am Anfang und am Ende einer Reihe.
+        
+        
     // Y/Z ≈ leg_len (Schenkellängen + Chamfer)
     attachable(
         anchor = anchor,
@@ -164,33 +178,33 @@ module openGrid_edge_filler_segment(
         zrot(90)
         translate([0, tileSize/2, -back_offset])
         rotate([90, -45, 0])
+        
         difference() {
 
             // ---------- 1) Volumen des L-Fillers ----------
             linear_extrude(height = len_total)
-                og_edge_L_profile(th = th, conn_half = conn_half);
+                og_edge_L_profile(th = th);
 
-            // ---------- 2) End-Cutouts im *extrude-Raum* ----------
-            //
-            // In diesem Raum gilt:
-            //   - Z = Segmentlänge (0 .. len_total)
-            //   - X/Y = L-Querschnitt (0 .. leg_len)
-            //
-            // Wir schneiden von beiden Enden etwas weg, lassen aber
-            // den Block insgesamt auf Länge len_total.
+            // ---------- 2) End-Cutouts mit Library-Cutout ----------
 
-            cut_len   = connector_full_length;   // wie lang der Slot ins Teil geht
-            cut_w     = th;                      // Breite in X
-            cut_h     = th;                      // Höhe in Y
+         // Querschnitt-Mitte für den Cutout (im L-Profil)
+            cut_xy = th + connector_length_half/2 - th/2 + (th-4)/4;    // Punkt mitten in der V-Brücke.
+            
+            connector_cutout_offset = connector_cutout_radius - 0.05;
+            
+            // linker End-Cutout (Segmentanfang, z = 0)
+            tag("remove")
+                translate([cut_xy, cut_xy, connector_cutout_offset])      // X/Y: im Segmentraum , Z: Segmentanfang
+                    rotate([0, 90, 45])         // Orientierung des Cutouts
+                        connector_cutout_delete_tool(anchor=CENTER,spin=180);
 
-            // linker End-Slot (Start bei z = 0 → etwas in das Teil hinein)
-            translate([0, 0, 0])
-                cube([cut_w, cut_h, cut_len], center=false);
-
-            // rechter End-Slot (Ende bei z = len_total)
-            translate([0, 0, len_total - cut_len])
-                cube([cut_w, cut_h, cut_len], center=false);
+            // rechter End-Cutout (Segmentende, z = len_total)
+            tag("remove")
+                translate([cut_xy, cut_xy, len_total - connector_cutout_offset])
+                    rotate([0, 90, 45])
+                        connector_cutout_delete_tool(anchor=CENTER);
         }
+
 
         children();
     }
@@ -226,8 +240,7 @@ module openGrid_edge_filler_row(
     orient     = UP
 ) {
     th        = og_edge_tile_thickness(boardType);
-    conn_half = og_edge_connector_half_len(boardType);
-    leg_len   = th + conn_half;
+    leg_len   = th + connector_length_half;
     total_len = Board_Length_Tiles * tileSize;
 
     attachable(anchor, spin, orient,
@@ -292,7 +305,6 @@ module openGrid_edge_fillers_for_board(
     board_w = Board_Width  * tileSize;
     board_h = Board_Height * tileSize;
     th      = og_edge_tile_thickness(boardType);
-    conn_h  = og_edge_connector_half_len(boardType);
     leg_len = th + conn_h;
 
     attachable(anchor, spin, orient,
