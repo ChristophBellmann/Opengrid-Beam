@@ -21,8 +21,12 @@ include <BOSL2/std.scad>;
 
 /*[Beam Configuration]*/
 Full_or_Lite = "Lite"; // [Full, Lite]
-Beam_width   = 2;      // Länge in Zellen
-Tile_Size             = 28;
+Beam_width   = 2;      // „logische“ Länge in Zellen (siehe unten)
+Tile_Size    = 28;
+
+// Umschalten: Endsegmente halb oder voll
+Half_left_end_segment  = true;   // true = linkes Endsegment halb
+Half_right_end_segment = true;   // true = rechtes Endsegment halb
 
 // ToDo Endabschluss bauen
 Chamfered_at_left_end  = false;
@@ -45,11 +49,11 @@ connector_cutout_radius        = 2.6;
 connector_cutout_dimple_radius = 2.7;
 connector_cutout_separation    = 2.5;
 connector_cutout_height        = 2.4; //  + 0.01?
-lite_cutout_distance_from_top = 1;
+lite_cutout_distance_from_top  = 1;
 
 // Connector-Features abgeleitet
-connector_length_half = connector_cutout_radius + connector_cutout_separation; 
-connector_length_nominal = connector_length_half *2; // ≈ 10.2 mm
+connector_length_half    = connector_cutout_radius + connector_cutout_separation; 
+connector_length_nominal = connector_length_half * 2; // ≈ 10.2 mm
 
 // openGrid-border Parameters
 Connector_Tolerance   = 0.05; // better 0.1; ? maybe...
@@ -60,6 +64,39 @@ function og_edge_tile_thickness(boardType) =
     boardType == "Lite"  ? Lite_Tile_Thickness :
     boardType == "Heavy" ? Heavy_Tile_Thickness :
                            Tile_Thickness;
+
+// ======================================================================
+// Längen-Funktionen für den Beam
+// ======================================================================
+
+// Länge eines Segments i (0..n-1)
+function beam_seg_len(i, n) =
+    (n <= 1) ? Tile_Size :  // Sonderfall: 1 Segment -> immer voll
+    (
+        i == 0
+            ? (Half_left_end_segment  ? Tile_Size/2 : Tile_Size)
+        : i == n-1
+            ? (Half_right_end_segment ? Tile_Size/2 : Tile_Size)
+        : Tile_Size
+    );
+
+// Gesamtlänge des Beams (Summe aller Segmentlängen)
+function beam_total_len(n) =
+    sum([for (k = [0 : n-1]) beam_seg_len(k, n)]);
+
+// Prefix-Summe bis vor Segment i (Abstand vom linken Ende)
+function beam_seg_prefix(i, n) =
+    (i <= 0) ? 0 :
+    sum([for (k = [0 : i-1]) beam_seg_len(k, n)]);
+
+// Mittelpunkt eines Segments i in X-Richtung
+function beam_seg_center(i, n) =
+    let(
+        L   = beam_total_len(n),
+        pre = beam_seg_prefix(i, n),
+        li  = beam_seg_len(i, n)
+    )
+    -L/2 + pre + li/2;
 
 // ======================================================================
 // 2D-L-Profil (Querschnitt) mit Chamfer und gefülltem Dreieck
@@ -97,14 +134,16 @@ module og_edge_L_profile(th) {
 
 module connector_cutout_delete_tool(anchor = CENTER, spin = 0, orient = UP) {
     //Begin connector cutout profile
-    connector_cutout_radius = 2.6;
+    connector_cutout_radius        = 2.6;
     connector_cutout_dimple_radius = 2.7;
-    connector_cutout_separation = 2.5;
-    connector_cutout_height = 2.4;
-    dimple_radius = 0.75 / 2;
+    connector_cutout_separation    = 2.5;
+    connector_cutout_height        = 2.4;
+    dimple_radius                  = 0.75 / 2;
 
-    attachable(anchor, spin, orient, size=[connector_cutout_radius * 2 - 0.1, connector_cutout_radius * 2, connector_cutout_height]) {
-        //connector cutout tool
+    attachable(anchor, spin, orient,
+               size=[connector_cutout_radius * 2 - 0.1,
+                     connector_cutout_radius * 2,
+                     connector_cutout_height]) {
         tag_scope()
             translate([-connector_cutout_radius + 0.05, 0, -connector_cutout_height / 2])
                 render()
@@ -123,14 +162,13 @@ module connector_cutout_delete_tool(anchor = CENTER, spin = 0, orient = UP) {
                                             right(connector_cutout_radius - connector_cutout_separation)
                                                 ycopies(spacing=(connector_cutout_radius + connector_cutout_separation) * 2)
                                                     circle(r=connector_cutout_dimple_radius);
-                                        //dimple (ass) to force seam. Only needed for positive connector piece (not delete tool)
-                                        //tag("remove")
-                                        //right(connector_cutout_radius*2 + 0.45 )//move dimple in or out
-                                        //    yflip_copy(offset=(dimple_radius+connector_cutout_radius)/2)//both sides of the dimpme
-                                        //        rect([1,dimple_radius+connector_cutout_radius], rounding=[0,-connector_cutout_radius,-dimple_radius,0], $fn=32); //rect with rounding of inner flare and outer smoothing
                                     }
-                                //outward flare fillet for easier insertion
-                                rect([1, connector_cutout_separation * 2 - (connector_cutout_dimple_radius - connector_cutout_separation)], rounding=[0, -.25, -.25, 0], $fn=32, corner_flip=true, anchor=LEFT);
+                                //outward flare fillet für leichteres Einrasten
+                                rect([1,
+                                      connector_cutout_separation * 2
+                                      - (connector_cutout_dimple_radius - connector_cutout_separation)],
+                                     rounding=[0, -.25, -.25, 0],
+                                     $fn=32, corner_flip=true, anchor=LEFT);
                             }
         children();
     }
@@ -138,7 +176,7 @@ module connector_cutout_delete_tool(anchor = CENTER, spin = 0, orient = UP) {
 
 // ======================================================================
 // EIN SEGMENT (eine Tile-Kante)
-// left_mode/right_mode: "end" = Cutout setzen, "none" = kein Cutout
+// left_mode/right_mode: "end" = Cutout setzen, "top_bot" = mittlere
 // ======================================================================
 
 module openGrid_edge_filler_segment(
@@ -146,8 +184,9 @@ module openGrid_edge_filler_segment(
     anchor    = CENTER,
     spin      = 0,
     orient    = UP,
-    left_mode  = "end",   // "end" oder "none"
-    right_mode = "end"
+    left_mode  = "end",   // "end" oder "top_bot"
+    right_mode = "end",
+    seg_len    = Tile_Size
 ) {
     th          = og_edge_tile_thickness(boardType);
     leg_len     = th + connector_length_half;
@@ -157,34 +196,34 @@ module openGrid_edge_filler_segment(
         anchor = anchor,
         spin   = spin,
         orient = orient,
-        size   = [Tile_Size, leg_len, leg_len]
+        size   = [seg_len, leg_len, leg_len]
     ) {
 
         zrot(90)
-        translate([0, Tile_Size/2, -back_offset])
+        translate([0, seg_len/2, -back_offset])
         rotate([90, -45, 0])
         difference() {
 
             // ---------- 1) Volumen des L-Fillers ----------
-            linear_extrude(height = Tile_Size)
+            linear_extrude(height = seg_len)
                 og_edge_L_profile(th = th);
 
             // ---------- 2) Cutouts für Connectoren ----------
 
             // Punkt im V-Bereich (XY-Position des Connectors)
             cut_xy = (2*th + connector_length_half - Lite_Tile_Thickness) / 2;
-            //= (2*th + connector_length_half - Lite_Tile_Thickness)/2
             
             // top center position in V-shape
             cut_zy = Connector_Tolerance + Connector_Protrusion + cut_xy; 
             
             // top lite_cutout_side 45°. 1 mm if Lite. Else, th/2 is centered.
-            cut_yz = (th == Lite_Tile_Thickness) ? lite_cutout_distance_from_top + connector_cutout_height /2 : th/2; 
+            cut_yz = (th == Lite_Tile_Thickness)
+                     ? lite_cutout_distance_from_top + connector_cutout_height/2
+                     : th/2; 
             
             // linker End-Cutout (Segmentanfang)
             if (left_mode == "end")
                 tag("remove")
-                    // color("Purple")
                     translate([cut_xy, cut_xy, connector_cutout_radius - Connector_Tolerance])
                         rotate([0, 90, 45])
                             connector_cutout_delete_tool(anchor=CENTER, spin=180);
@@ -192,13 +231,13 @@ module openGrid_edge_filler_segment(
             // bottom mittlerer Cutout links (Segmentmitte bottom left)
             if (right_mode == "top_bot") {
                 tag("remove")  
-                    translate([cut_yz, cut_zy, Tile_Size])
+                    translate([cut_yz, cut_zy, seg_len])
                         rotate([-90, -90, -90])
                             connector_cutout_delete_tool(anchor=CENTER, spin=90);
                             
-            // top mittlerer Cutout links (Segmentmitte top left)
+                // top mittlerer Cutout links (Segmentmitte top left)
                 tag("remove")  
-                    translate([cut_zy, cut_yz, Tile_Size])
+                    translate([cut_zy, cut_yz, seg_len])
                         rotate([0, 90, 90])
                             connector_cutout_delete_tool(anchor=CENTER, spin=90);      
             }
@@ -206,7 +245,7 @@ module openGrid_edge_filler_segment(
             // rechter End-Cutout (Segmentende)
             if (right_mode == "end") 
                 tag("remove")
-                    translate([cut_xy, cut_xy, Tile_Size])
+                    translate([cut_xy, cut_xy, seg_len])
                         rotate([0, 90, 45])
                             connector_cutout_delete_tool(anchor=CENTER);
                                         
@@ -217,7 +256,7 @@ module openGrid_edge_filler_segment(
                         rotate([-90, -90, -90])
                             connector_cutout_delete_tool(anchor=CENTER, spin=90);
                             
-            // top mittlerer Cutout right (Segmentmitte top right)
+                // top mittlerer Cutout right (Segmentmitte top right)
                 tag("remove")  
                     translate([cut_zy, cut_yz, 0])
                         rotate([0, 90, 90])
@@ -232,30 +271,24 @@ module openGrid_edge_filler_segment(
 // Chamfer- und Corner-Elemente für den Beam (an L-Boxen angesetzt)
 // ======================================================================
 
-// Einen einfachen Keil an der linken oder rechten Stirnseite des Beams ansetzen.
-// Wir benutzen die gleiche leg_len wie der Beam, d.h. der Keil "klebt" an der L-Box.
+// Keil an der Stirnseite des Beams.
+// x=0 ist Stirnfläche, Beam geht nach +X.
 module beam_chamfer_fill(left, boardType = Full_or_Lite) {
     th      = og_edge_tile_thickness(boardType);
     leg_len = th + connector_length_half;
 
-    // Im Beam-Raum: X = Beam-Länge, Y/Z ≈ leg_len
-    // Wir bauen einen Keil in der YZ-Ebene und extrudieren ihn entlang X.
-    // left  => an negativer X-Seite, right => positive X-Seite.
     xsign = left ? -1 : 1;
 
-    translate([xsign * (Beam_width*Tile_Size/2), 0, 0])
-        // Extrusion entlang X (lokale X-Achse)
-        rotate([0, 90, 0])
-            linear_extrude(height = Tile_Size)
-                polygon([
-                    [0,          0],
-                    [leg_len,    0],
-                    [0,         -leg_len]
-                ]);
+    rotate([0, 90, 0])
+        linear_extrude(height = leg_len)
+            polygon([
+                [0,          0],
+                [leg_len,    0],
+                [0,         -xsign*leg_len]
+            ]);
 }
 
-// Ein einfacher Eck-Ausschnitt (Corner-Cutout) an der Stirnseite des Beams.
-// Hier relativ grob wie beim Border, nur an die L-Box-Boundingbox angepasst.
+// Eck-Ausschnitt (Corner-Cutout) an der Stirnseite des Beams.
 module beam_corner_cutout(left, boardType = Full_or_Lite) {
     th      = og_edge_tile_thickness(boardType);
     leg_len = th + connector_length_half;
@@ -263,14 +296,13 @@ module beam_corner_cutout(left, boardType = Full_or_Lite) {
     xsign = left ? -1 : 1;
 
     color("Purple")
-    translate([xsign * (Beam_width*Tile_Size/2), 0, 0])
-        rotate([0, 90, 0])
-            linear_extrude(height = leg_len*1.5)
-                polygon([
-                    [-(leg_len),  leg_len],
-                    [-(leg_len), -leg_len],
-                    [ (leg_len), -leg_len]
-                ]);
+    rotate([0, 90, 0])
+        linear_extrude(height = leg_len*1.5)
+            polygon([
+                [-(leg_len),  leg_len],
+                [-(leg_len), -leg_len],
+                [ (leg_len), -xsign*leg_len]
+            ]);
 }
 
 // ======================================================================
@@ -279,16 +311,14 @@ module beam_corner_cutout(left, boardType = Full_or_Lite) {
 
 module openGrid_edge_beam(
     boardType  = Full_or_Lite,
-    beam_width = Beam_width,
+    beam_width = Beam_width,  // Anzahl Segmente
     anchor     = CENTER,
     spin       = 0,
     orient     = UP
 ) {
-    th        = og_edge_tile_thickness(boardType);
-    leg_len   = th + connector_length_half;
-    span      = beam_width * Tile_Size;
-    left_ctr  = -span/2 + Tile_Size/2;      // X-Pos Mitte linkes Segment
-    right_ctr =  span/2 - Tile_Size/2;      // X-Pos Mitte rechtes Segment
+    th      = og_edge_tile_thickness(boardType);
+    leg_len = th + connector_length_half;
+    span    = beam_total_len(beam_width);   // NEU: echte Gesamtlänge
 
     attachable(
         anchor = anchor,
@@ -303,35 +333,40 @@ module openGrid_edge_beam(
             union() {
                 if (beam_width >= 1) {
 
-                    xcopies(spacing = Tile_Size, n = beam_width)
-                        openGrid_edge_filler_segment(
-                            boardType  = boardType,
-                            anchor     = CENTER,
+                    // Manuelles Platzieren mit variabler Segmentlänge
+                    for (i = [0 : beam_width-1]) {
+                        segL = beam_seg_len(i, beam_width);
+                        xctr = beam_seg_center(i, beam_width);
 
-                            // linker Rand (erstes Segment)
-                            left_mode  = ($idx == 0) ? "end"     : "top_bot",
-
-                            // rechter Rand (letztes Segment)
-                            right_mode = ($idx == beam_width-1) ? "end" : "top_bot"
-                        );
+                        translate([xctr, 0, 0])
+                            openGrid_edge_filler_segment(
+                                boardType  = boardType,
+                                anchor     = CENTER,
+                                left_mode  = (i == 0) ? "end"     : "top_bot",
+                                right_mode = (i == beam_width-1) ? "end" : "top_bot",
+                                seg_len    = segL
+                            );
+                    }
                 }
 
-                // Chamfer-Füller: jetzt an den *Enden* der Kette
+                // Chamfer-Füller direkt an den Enden (Stirnflächen)
                 if (Chamfered_at_left_end)
-                    translate([-(beam_width-1)/2 * Tile_Size, 1, 0])
+                    translate([-span/2, 0, 0])
                         beam_chamfer_fill(true,  boardType);
 
                 if (Chamfered_at_right_end)
-                    translate([+(beam_width-1)/2 * Tile_Size, 0, 0])
+                    translate([+span/2, 0, 0])
                         beam_chamfer_fill(false, boardType);
             }
 
-            // (b) NEGATIVER Körper: Corner-Cutouts (werden abgezogen)
+            // (b) NEGATIVER Körper: Corner-Cutouts
             union() {
                 if (Left_end_is_corner)
-                    beam_corner_cutout(true,  boardType);
+                    translate([-span/2, 0, 0])
+                        beam_corner_cutout(true,  boardType);
                 if (Right_end_is_corner)
-                    beam_corner_cutout(false, boardType);
+                    translate([+span/2, 0, 0])
+                        beam_corner_cutout(false, boardType);
             }
         }
 
@@ -340,13 +375,14 @@ module openGrid_edge_beam(
 }
 
 
+
 // ======================================================================
 // Vorschau / Render-Call
 // ======================================================================
 
 color("orange")
     openGrid_edge_beam(
-        boardType = Full_or_Lite,
+        boardType  = Full_or_Lite,
         beam_width = Beam_width,
-        anchor    = CENTER
+        anchor     = CENTER
     );
