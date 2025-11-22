@@ -21,7 +21,7 @@ include <BOSL2/std.scad>;
 
 /*[Beam Configuration]*/
 Full_or_Lite = "Lite"; // [Full, Lite]
-Beam_width   = 2;      // „logische“ Länge in Zellen (siehe unten)
+Beam_width   = 4;      // „logische“ Länge in Zellen (siehe unten)
 Tile_Size    = 28;
 
 // Umschalten: Endsegmente halb oder voll
@@ -29,8 +29,8 @@ Half_left_end_segment  = true;   // true = linkes Endsegment halb
 Half_right_end_segment = true;   // true = rechtes Endsegment halb
 
 // ToDo Endabschluss bauen
-Chamfered_at_left_end  = false;
-Chamfered_at_right_end = false;
+Chamfered_at_left_end  = true;
+Chamfered_at_right_end = true;
 // ToDo Ecke bauen
 Left_end_is_corner  = false;
 Right_end_is_corner = false;
@@ -202,6 +202,9 @@ module openGrid_edge_filler_segment(
         zrot(90)
         translate([0, seg_len/2, -back_offset])
         rotate([90, -45, 0])
+                
+        color("orange")
+        
         difference() {
 
             // ---------- 1) Volumen des L-Fillers ----------
@@ -277,15 +280,31 @@ module beam_chamfer_fill(left, boardType = Full_or_Lite) {
     th      = og_edge_tile_thickness(boardType);
     leg_len = th + connector_length_half;
 
-    xsign = left ? -1 : 1;
+    // Kern-Keil: sitzt zentriert im YZ-Querschnitt,
+    // Basisfläche in der Stirn-Ebene x = 0, Spitze Richtung +X.
+    module chamfer_core() {
+        // Y,Z von -leg_len/2 .. +leg_len/2
+        // "left" spiegelt den Keil
+        mirror([ left ? 1 : 0, 0, 0 ])     // <-- entlang X spiegeln
+            rotate([0, 90, 0])
+                linear_extrude(height = leg_len)
+                    polygon([
+                        [0,       0],
+                        [leg_len, 0],
+                        [0,      -leg_len]
+                    ]);
+    }
 
-    rotate([0, 90, 0])
-        linear_extrude(height = leg_len)
-            polygon([
-                [0,          0],
-                [leg_len,    0],
-                [0,         -xsign*leg_len]
-            ]);
+    // Debug-Farben: links = rot, rechts = blau
+    color(left ? "lightyellow" : "lightblue")
+        if (left) {
+            // linker Chamfer: zeigt nach +X
+            chamfer_core();
+        } else {
+            // rechter Chamfer: exakt gespiegelte Version, zeigt nach -X
+            mirror([0, 1, 0])    // Spiegelung an der Y-Achse
+                chamfer_core();
+        }
 }
 
 // Eck-Ausschnitt (Corner-Cutout) an der Stirnseite des Beams.
@@ -333,20 +352,20 @@ module openGrid_edge_beam(
             union() {
                 if (beam_width >= 1) {
 
-                    // Manuelles Platzieren mit variabler Segmentlänge
-                    for (i = [0 : beam_width-1]) {
-                        segL = beam_seg_len(i, beam_width);
-                        xctr = beam_seg_center(i, beam_width);
-
-                        translate([xctr, 0, 0])
+                    // xcopies for readability; per-segment translation preserves half-segment logic
+                    xcopies(spacing = 0, n = beam_width)
+                        let(
+                            segL = beam_seg_len($idx, beam_width),
+                            xcenter = beam_seg_center($idx, beam_width)
+                        )
+                        translate([xcenter, 0, 0])
                             openGrid_edge_filler_segment(
                                 boardType  = boardType,
                                 anchor     = CENTER,
-                                left_mode  = (i == 0) ? "end"     : "top_bot",
-                                right_mode = (i == beam_width-1) ? "end" : "top_bot",
+                                left_mode  = ($idx == 0) ? "end"     : "top_bot",
+                                right_mode = ($idx == beam_width-1) ? "end" : "top_bot",
                                 seg_len    = segL
                             );
-                    }
                 }
 
                 // Chamfer-Füller direkt an den Enden (Stirnflächen)
@@ -380,9 +399,8 @@ module openGrid_edge_beam(
 // Vorschau / Render-Call
 // ======================================================================
 
-color("orange")
-    openGrid_edge_beam(
-        boardType  = Full_or_Lite,
-        beam_width = Beam_width,
-        anchor     = CENTER
-    );
+openGrid_edge_beam(
+    boardType  = Full_or_Lite,
+    beam_width = Beam_width,
+    anchor     = CENTER
+);
