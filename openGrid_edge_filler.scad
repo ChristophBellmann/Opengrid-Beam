@@ -1,8 +1,8 @@
 /* 
-openGrid Edge Beam Library
+openGrid Beam Library
 Autor: ChatGPT + Christoph :)
 
-L-förmiger Kantenfüller für openGrid-Tiles (Full, Lite, Heavy).
+L-förmiger Kantenfüller Edge Beam für openGrid-Tiles (Full, Lite, Heavy).
 
 Geometrie:
 - Schenkel-DICKE = Tile_Thickness / Lite_Tile_Thickness / Heavy_Tile_Thickness
